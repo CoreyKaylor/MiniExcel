@@ -22,14 +22,13 @@ public partial class MappingImporter
     }
 
     [CreateSyncVersion]
-    public async Task<IEnumerable<T>> QueryAsync<T>(Stream stream, CancellationToken cancellationToken = default) where T : class, new()
+    public async Task<IEnumerable<T>> QueryAsync<T>(Stream? stream, CancellationToken cancellationToken = default) where T : class, new()
     {
-        if (stream == null)
+        if (stream is null)
             throw new ArgumentNullException(nameof(stream));
 
-        var mapping = _registry.GetCompiledMapping<T>();
-        if (mapping == null)
-            throw new InvalidOperationException($"No mapping configuration found for type {typeof(T).Name}. Configure the mapping using MappingRegistry.Configure<{typeof(T).Name}>().");
+        var mapping = _registry.GetCompiledMapping<T>()
+            ?? throw new InvalidOperationException($"No mapping configuration found for type {typeof(T).Name}. Configure the mapping using MappingRegistry.Configure<{typeof(T).Name}>().");
 
         return await MappingReader<T>.QueryAsync(stream, mapping, cancellationToken).ConfigureAwait(false);
     }
@@ -42,14 +41,13 @@ public partial class MappingImporter
     }
 
     [CreateSyncVersion]
-    public async Task<T> QuerySingleAsync<T>(Stream stream, CancellationToken cancellationToken = default) where T : class, new()
+    public async Task<T> QuerySingleAsync<T>(Stream? stream, CancellationToken cancellationToken = default) where T : class, new()
     {
-        if (stream == null)
+        if (stream is null)
             throw new ArgumentNullException(nameof(stream));
 
-        var mapping = _registry.GetCompiledMapping<T>();
-        if (mapping == null)
-            throw new InvalidOperationException($"No mapping configuration found for type {typeof(T).Name}. Configure the mapping using MappingRegistry.Configure<{typeof(T).Name}>().");
+        var mapping = _registry.GetCompiledMapping<T>()
+            ?? throw new InvalidOperationException($"No mapping configuration found for type {typeof(T).Name}. Configure the mapping using MappingRegistry.Configure<{typeof(T).Name}>().");
 
         var results = await MappingReader<T>.QueryAsync(stream, mapping, cancellationToken).ConfigureAwait(false);
         return results.FirstOrDefault() ?? new T();

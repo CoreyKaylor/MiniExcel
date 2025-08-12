@@ -3,8 +3,8 @@ namespace MiniExcelLib.Core.Mapping;
 internal class CompiledMapping<T>
 {
     public string WorksheetName { get; set; } = "Sheet1";
-    public IReadOnlyList<CompiledPropertyMapping> Properties { get; set; } = new List<CompiledPropertyMapping>();
-    public IReadOnlyList<CompiledCollectionMapping> Collections { get; set; } = new List<CompiledCollectionMapping>();
+    public IReadOnlyList<CompiledPropertyMapping> Properties { get; set; } = [];
+    public IReadOnlyList<CompiledCollectionMapping> Collections { get; set; } = [];
     
     // Universal optimization structures
     /// <summary>
@@ -30,7 +30,7 @@ internal class CompiledMapping<T>
     /// <summary>
     /// Whether this mapping has been optimized with the universal optimization system
     /// </summary>
-    public bool IsUniversallyOptimized => OptimizedCellGrid != null && OptimizedBoundaries != null;
+    public bool IsUniversallyOptimized => OptimizedCellGrid is not null && OptimizedBoundaries is not null;
     
     /// <summary>
     /// Pre-compiled collection helpers for fast collection handling
@@ -43,15 +43,15 @@ internal class CompiledMapping<T>
 /// </summary>
 internal class OptimizedCollectionHelper
 {
-    public Func<System.Collections.IList> Factory { get; set; } = null!;
-    public Func<System.Collections.IList, object> Finalizer { get; set; } = null!;
+    public Func<IList> Factory { get; set; } = null!;
+    public Func<IList, object> Finalizer { get; set; } = null!;
     public Action<object, object?>? Setter { get; set; }
     public bool IsArray { get; set; }
 }
 
 internal class CompiledPropertyMapping
 {
-    public Func<object, object> Getter { get; set; } = null!;
+    public Func<object, object?> Getter { get; set; } = null!;
     public string CellAddress { get; set; } = null!;
     public int CellColumn { get; set; }  // Pre-parsed column index
     public int CellRow { get; set; }     // Pre-parsed row index
@@ -64,7 +64,7 @@ internal class CompiledPropertyMapping
 
 internal class CompiledCollectionMapping
 {
-    public Func<object, IEnumerable> Getter { get; set; } = null!;
+    public Func<object, IEnumerable?> Getter { get; set; } = null!;
     public string StartCell { get; set; } = null!;
     public int StartCellColumn { get; set; }  // Pre-parsed column index
     public int StartCellRow { get; set; }     // Pre-parsed row index
@@ -139,10 +139,10 @@ internal class OptimizedCellHandler
     public Func<object?, object?>? CollectionItemConverter { get; set; }
     
     /// <summary>For collections: pre-compiled factory to create the collection instance</summary>
-    public Func<System.Collections.IList>? CollectionFactory { get; set; }
+    public Func<IList>? CollectionFactory { get; set; }
     
     /// <summary>For collections: pre-compiled converter from list to final type (e.g., array)</summary>
-    public Func<System.Collections.IList, object>? CollectionFinalizer { get; set; }
+    public Func<IList, object>? CollectionFinalizer { get; set; }
     
     /// <summary>For collections: whether the target type is an array (vs list)</summary>
     public bool IsArrayTarget { get; set; }

@@ -1,6 +1,3 @@
-using MiniExcelLib.Core.Helpers;
-using MiniExcelLib.Core.OpenXml.Utils;
-
 namespace MiniExcelLib.Core.Mapping;
 
 internal class WriterBoundaries
@@ -19,20 +16,18 @@ internal class ItemOffset
 internal static partial class MappingWriter<T>
 {
     [CreateSyncVersion]
-    public static async Task<int[]> SaveAsAsync(Stream stream, IEnumerable<T> value, CompiledMapping<T> mapping, CancellationToken cancellationToken = default)
+    public static async Task<int[]> ExportAsync(Stream stream, IEnumerable<T> value, CompiledMapping<T> mapping, CancellationToken cancellationToken = default)
     {
-        if (stream == null)
+        if (stream is null)
             throw new ArgumentNullException(nameof(stream));
-        if (value == null)
+        if (value is null)
             throw new ArgumentNullException(nameof(value));
-        if (mapping == null)
+        if (mapping is null)
             throw new ArgumentNullException(nameof(mapping));
 
         // Use optimized universal writer if mapping is optimized
         if (mapping.IsUniversallyOptimized)
-        {
-            return await SaveAsUniversalAsync(stream, value, mapping, cancellationToken).ConfigureAwait(false);
-        }
+            return await ExportUniversalAsync(stream, value, mapping, cancellationToken).ConfigureAwait(false);
 
         // Legacy path for non-optimized mappings
         // Convert mapped data to row-based format that OpenXmlWriter expects.
@@ -66,7 +61,6 @@ internal static partial class MappingWriter<T>
         if (rowBuffer.Count > 0)
         {
             var maxRow = rowBuffer.Keys.Max();
-            
             for (int rowNum = 1; rowNum <= maxRow; rowNum++)
             {
                 var rowDict = CreateRowDict(rowBuffer, rowNum, allColumns);
@@ -84,7 +78,7 @@ internal static partial class MappingWriter<T>
     
     private static void ProcessItemData(T item, CompiledMapping<T> mapping, SortedDictionary<int, Dictionary<string, object>> rowBuffer, int itemIndex, WriterBoundaries boundaries)
     {
-        if(item == null)
+        if(item is null)
             throw new ArgumentNullException(nameof(item));
         
         // Calculate offset for this item based on boundaries and mapping type
@@ -102,8 +96,7 @@ internal static partial class MappingWriter<T>
         // Add collections with offset
         foreach (var coll in mapping.Collections)
         {
-            var collection = coll.Getter(item);
-            if (collection != null)
+            if (coll.Getter(item) is { } collection)
             {
                 var offsetStartCell = ApplyOffset(coll.StartCell, itemOffset.RowOffset, itemOffset.ColumnOffset);
                 foreach (var cellInfo in StreamCollectionCellsWithOffset(collection, coll, offsetStartCell))
@@ -120,8 +113,10 @@ internal static partial class MappingWriter<T>
             return;
             
         if (!rowBuffer.ContainsKey(row))
+        {
             rowBuffer[row] = DictionaryPool.Rent();
-            
+        }
+
         rowBuffer[row][cellAddress] = value;
     }
     
@@ -135,9 +130,14 @@ internal static partial class MappingWriter<T>
             if (ReferenceHelper.ParseReference(prop.CellAddress, out int col, out int row))
             {
                 if (row > boundaries.MaxPropertyRow)
+                {
                     boundaries.MaxPropertyRow = row;
+                }
+
                 if (col > boundaries.MaxPropertyColumn)
+                {
                     boundaries.MaxPropertyColumn = col;
+                }
             }
         }
         
@@ -190,7 +190,7 @@ internal static partial class MappingWriter<T>
     private static Dictionary<string, object> CreateRowDict(SortedDictionary<int, Dictionary<string, object>> rowBuffer, int rowNum, List<string> allColumns)
     {
         var rowDict = DictionaryPool.Rent();
-        
+
         if (rowBuffer.TryGetValue(rowNum, out var sourceRow))
         {
             foreach (var column in allColumns)
@@ -237,68 +237,70 @@ internal static partial class MappingWriter<T>
         // For collections, determine columns from mapping configuration without iterating data
         foreach (var coll in mapping.Collections)
         {
-            if (ReferenceHelper.ParseReference(coll.StartCell, out int startCol, out _))
+            if (!ReferenceHelper.ParseReference(coll.StartCell, out int startCol, out _)) 
+                continue;
+            
+            // Only support vertical collections
+            if (coll.Layout != CollectionLayout.Vertical) 
+                continue;
+                
+            // Vertical layout or nested collection
+            if (coll.ItemMapping is not null)
             {
-                // Only support vertical collections
-                if (coll.Layout == CollectionLayout.Vertical)
-                {
-                    // Vertical layout or nested collection
-                    if (coll.ItemMapping != null)
-                    {
-                        // For nested mappings, get columns from the item mapping
-                            var itemMappingType = coll.ItemMapping.GetType();
-                            var propsProperty = itemMappingType.GetProperty("Properties");
+                // For nested mappings, get columns from the item mapping
+                var itemMappingType = coll.ItemMapping.GetType();
+                var propsProperty = itemMappingType.GetProperty("Properties");
 
-                            if (propsProperty?.GetValue(coll.ItemMapping) is IEnumerable<CompiledPropertyMapping> properties)
+                if (propsProperty?.GetValue(coll.ItemMapping) is IEnumerable<CompiledPropertyMapping> properties)
+                {
+                    foreach (var prop in properties)
+                    {
+                        if (ReferenceHelper.ParseReference(prop.CellAddress, out int propCol, out _))
+                        {
+                            var propColumn = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(propCol, 1));
+                            if (!string.IsNullOrEmpty(propColumn))
                             {
-                                foreach (var prop in properties)
-                                {
-                                    if (ReferenceHelper.ParseReference(prop.CellAddress, out int propCol, out _))
-                                    {
-                                        var propColumn = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(propCol, 1));
-                                        if (!string.IsNullOrEmpty(propColumn))
-                                            columns.Add(propColumn);
-                                    }
-                                }
+                                columns.Add(propColumn);
                             }
                         }
-                        else
-                        {
-                            // Simple vertical collection
-                            var col = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(startCol, 1));
-                            if (!string.IsNullOrEmpty(col))
-                                columns.Add(col);
-                        }
+                    }
+                }
+            }
+            else
+            {
+                // Simple vertical collection
+                var col = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(startCol, 1));
+                if (!string.IsNullOrEmpty(col))
+                {
+                    columns.Add(col);
                 }
             }
         }
         
         // Ensure all columns between min and max are included to prevent compression
-        if (columns.Count > 0)
+        if (columns.Count == 0) 
+            return columns.OrderBy(c => c).ToList();
+        
+        var sortedColumns = columns.OrderBy(c => c).ToList();
+        var minColumn = sortedColumns.First();
+        var maxColumn = sortedColumns.Last();
+            
+        // Convert column letters to numbers for easier range calculation
+        var minColNum = ReferenceHelper.ParseReference(minColumn + "1", out int minCol, out _) ? minCol : 1;
+        var maxColNum = ReferenceHelper.ParseReference(maxColumn + "1", out int maxCol, out _) ? maxCol : 1;
+            
+        // Add all columns in the range
+        var allColumnsInRange = new List<string>();
+        for (int col = minColNum; col <= maxColNum; col++)
         {
-            var sortedColumns = columns.OrderBy(c => c).ToList();
-            var minColumn = sortedColumns.First();
-            var maxColumn = sortedColumns.Last();
-            
-            // Convert column letters to numbers for easier range calculation
-            var minColNum = ReferenceHelper.ParseReference(minColumn + "1", out int minCol, out _) ? minCol : 1;
-            var maxColNum = ReferenceHelper.ParseReference(maxColumn + "1", out int maxCol, out _) ? maxCol : 1;
-            
-            // Add all columns in the range
-            var allColumnsInRange = new List<string>();
-            for (int col = minColNum; col <= maxColNum; col++)
+            var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1));
+            if (!string.IsNullOrEmpty(columnLetter))
             {
-                var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1));
-                if (!string.IsNullOrEmpty(columnLetter))
-                {
-                    allColumnsInRange.Add(columnLetter);
-                }
+                allColumnsInRange.Add(columnLetter);
             }
-            
-            return allColumnsInRange;
         }
         
-        return columns.OrderBy(c => c).ToList();
+        return allColumnsInRange;
     }
     
     private static IEnumerable<KeyValuePair<string, object>> StreamCollectionCellsWithOffset(IEnumerable collection, CompiledCollectionMapping mapping, string offsetStartCell)
@@ -313,7 +315,7 @@ internal static partial class MappingWriter<T>
         // Process collection items one at a time without buffering
         foreach (var item in collection)
         {
-            if (mapping.ItemMapping != null && mapping.ItemType != null)
+            if (mapping is { ItemMapping: not null, ItemType: not null })
             {
                 // Complex item with nested mapping
                 var itemMapping = mapping.ItemMapping;
@@ -371,23 +373,24 @@ internal static partial class MappingWriter<T>
 
     private static object ConvertValue(object? value, CompiledPropertyMapping? prop)
     {
-        if (value == null) return string.Empty;
+        if (value is null) 
+            return string.Empty;
+
+        if (prop is null or { Format: null or "" }) 
+            return value;
         
-        if (prop != null && !string.IsNullOrEmpty(prop.Format))
-        {
-            if (value is IFormattable formattable)
-                return formattable.ToString(prop.Format, null);
-        }
+        if (value is IFormattable formattable)
+            return formattable.ToString(prop.Format, null);
 
         return value;
     }
     
     // Universal optimized writer implementation
     [CreateSyncVersion]
-    private static async Task<int[]> SaveAsUniversalAsync(Stream stream, IEnumerable<T> value, CompiledMapping<T> mapping, CancellationToken cancellationToken = default)
+    private static async Task<int[]> ExportUniversalAsync(Stream stream, IEnumerable<T> value, CompiledMapping<T> mapping, CancellationToken cancellationToken = default)
     {
         if (!mapping.IsUniversallyOptimized)
-            throw new InvalidOperationException("SaveAsUniversalAsync requires a universally optimized mapping");
+            throw new InvalidOperationException("ExportUniversalAsync requires a universally optimized mapping");
 
         // Use optimized direct row streaming based on pre-calculated cell grid
         var rowEnumerable = CreateOptimizedRows(value, mapping);
@@ -405,7 +408,7 @@ internal static partial class MappingWriter<T>
         var boundaries = mapping.OptimizedBoundaries!;
         
         // For simple mappings without collections, handle row positioning
-        if (!mapping.Collections.Any())
+        if (mapping.Collections.Count == 0)
         {
             // If data starts at row > 1, we need to write placeholder rows
             if (boundaries.MinRow > 1)
@@ -414,8 +417,7 @@ internal static partial class MappingWriter<T>
                 var placeholderRow = new Dictionary<string, object>();
                 for (int col = boundaries.MinColumn; col <= boundaries.MaxColumn; col++)
                 {
-                    var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                        OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(col, 1));
+                    var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1));
                     placeholderRow[columnLetter] = "";
                 }
                 
@@ -428,10 +430,8 @@ internal static partial class MappingWriter<T>
             
             // Now write the actual data rows
             var currentRow = boundaries.MinRow;
-            foreach (var item in items)
+            foreach (var item in items.Where(x => x is not null))
             {
-                if (item == null) continue;
-                
                 // For column layouts (GridHeight > 1), we need to write multiple rows for each item
                 if (boundaries.GridHeight > 1)
                 {
@@ -478,8 +478,6 @@ internal static partial class MappingWriter<T>
         // Write placeholder rows if needed
         if (boundaries.MinRow > 1)
         {
-            var placeholderRow = new Dictionary<string, object>();
-            
             // Find the maximum column that will have data
             int maxDataCol = 0;
             for (int relativeCol = 0; relativeCol < cellGrid.GetLength(1); relativeCol++)
@@ -495,12 +493,9 @@ internal static partial class MappingWriter<T>
             }
             
             // Initialize all columns that will be used
-            for (int col = 1; col <= maxDataCol; col++)
-            {
-                var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                    OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(col, 1));
-                placeholderRow[columnLetter] = "";
-            }
+            var placeholderRow = Enumerable.Range(1, maxDataCol)
+                .Select(col => ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1)))
+                .ToDictionary(columnLetter => columnLetter, object (_) => "");
             
             for (int emptyRow = 1; emptyRow < boundaries.MinRow; emptyRow++)
             {
@@ -509,8 +504,9 @@ internal static partial class MappingWriter<T>
         }
         
         // Now stream the actual data using pre-calculated boundaries
-        var itemEnumerator = items.GetEnumerator();
-        if (!itemEnumerator.MoveNext()) yield break;
+        using var itemEnumerator = items.GetEnumerator();
+        if (!itemEnumerator.MoveNext()) 
+            yield break;
         
         var currentItem = itemEnumerator.Current;
         var currentItemIndex = 0;
@@ -528,8 +524,7 @@ internal static partial class MappingWriter<T>
             // Initialize all columns with empty values to ensure proper column structure
             for (int col = boundaries.MinColumn; col <= boundaries.MaxColumn; col++)
             {
-                var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                    OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(col, 1));
+                var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1));
                 row[columnLetter] = "";
             }
             
@@ -544,18 +539,17 @@ internal static partial class MappingWriter<T>
                 {
                     var handler = cellGrid[relativeRow, relativeCol];
                     
-                    if (handler.Type == CellHandlerType.Property && currentItem != null)
+                    if (handler.Type == CellHandlerType.Property && currentItem is not null)
                     {
                         // Simple property - extract value
-                        if (handler.ValueExtractor != null)
+                        if (handler.ValueExtractor is not null)
                         {
                             var value = handler.ValueExtractor(currentItem, 0);
-                            var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                                OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(col, 1));
+                            var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1));
                             row[columnLetter] = value ?? "";
                         }
                     }
-                    else if (handler.Type == CellHandlerType.CollectionItem && currentItem != null)
+                    else if (handler.Type == CellHandlerType.CollectionItem && currentItem is not null)
                     {
                         // Collection item - check if we need to start/continue enumeration
                         var collIndex = handler.CollectionIndex;
@@ -567,13 +561,20 @@ internal static partial class MappingWriter<T>
                             if (!collectionEnumerators.ContainsKey(collIndex))
                             {
                                 var collection = handler.CollectionMapping?.Getter(currentItem);
-                                if (collection != null)
+                                if (collection is not null)
                                 {
                                     var enumerator = collection.GetEnumerator();
-                                    if (enumerator.MoveNext())
+                                    try
                                     {
-                                        collectionEnumerators[collIndex] = enumerator;
-                                        collectionItems[collIndex] = enumerator.Current;
+                                        if (enumerator.MoveNext())
+                                        {
+                                            collectionEnumerators[collIndex] = enumerator;
+                                            collectionItems[collIndex] = enumerator.Current;
+                                        }
+                                    }
+                                    finally
+                                    {
+                                        (enumerator as IDisposable)?.Dispose();
                                     }
                                 }
                             }
@@ -581,8 +582,7 @@ internal static partial class MappingWriter<T>
                             // Get current collection item
                             if (collectionItems.TryGetValue(collIndex, out var collItem))
                             {
-                                var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                                    OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(col, 1));
+                                var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1));
                                 row[columnLetter] = collItem ?? "";
                             }
                         }
@@ -632,7 +632,7 @@ internal static partial class MappingWriter<T>
                 else
                 {
                     hasMoreItems = false;
-                    currentItem = default(T);
+                    currentItem = default;
                 }
             }
         }
@@ -645,29 +645,25 @@ internal static partial class MappingWriter<T>
         // Initialize all columns with empty values
         for (int col = boundaries.MinColumn; col <= boundaries.MaxColumn; col++)
         {
-            var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(col, 1));
+            var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1));
             row[columnLetter] = string.Empty;
         }
         
         // Fill in property values
         foreach (var prop in mapping.Properties)
         {
-            var value = prop.Getter(item);
-            if (value != null)
+            if (prop.Getter(item) is not { } value)
+                continue;
+
+            var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(prop.CellColumn, 1));
+                
+            // Apply formatting if specified
+            if (!string.IsNullOrEmpty(prop.Format) && value is IFormattable formattable)
             {
-                var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                    OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(prop.CellColumn, 1));
-                
-                
-                // Apply formatting if specified
-                if (!string.IsNullOrEmpty(prop.Format) && value is IFormattable formattable)
-                {
-                    value = formattable.ToString(prop.Format, null);
-                }
-                
-                row[columnLetter] = value;
+                value = formattable.ToString(prop.Format, null);
             }
+                
+            row[columnLetter] = value;
         }
         
         return row;
@@ -681,33 +677,25 @@ internal static partial class MappingWriter<T>
         int startCol = Math.Min(1, boundaries.MinColumn);  // Always include column A (column 1)
         for (int col = startCol; col <= boundaries.MaxColumn; col++)
         {
-            var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(col, 1));
+            var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(col, 1));
             row[columnLetter] = string.Empty;
         }
         
         // Only fill in the property value that belongs to this specific row
-        foreach (var prop in mapping.Properties)
+        foreach (var prop in mapping.Properties.Where(p => p.CellRow == absoluteRow))
         {
-            // Check if this property belongs to the current row
-            if (prop.CellRow == absoluteRow)
+            if(prop.Getter(item) is not { } value)
+                continue;
+
+            var columnLetter = ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(prop.CellColumn, 1));
+                    
+            // Apply formatting if specified
+            if (!string.IsNullOrEmpty(prop.Format) && value is IFormattable formattable)
             {
-                var value = prop.Getter(item);
-                if (value != null)
-                {
-                    var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                        OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(prop.CellColumn, 1));
-                    
-                    
-                    // Apply formatting if specified
-                    if (!string.IsNullOrEmpty(prop.Format) && value is IFormattable formattable)
-                    {
-                        value = formattable.ToString(prop.Format, null);
-                    }
-                    
-                    row[columnLetter] = value;
-                }
+                value = formattable.ToString(prop.Format, null);
             }
+                    
+            row[columnLetter] = value;
         }
         
         return row;
@@ -716,12 +704,12 @@ internal static partial class MappingWriter<T>
     private static object? ExtractCollectionItemValueForItem(T item, OptimizedCellHandler cellHandler,
         int absoluteRow, int absoluteCol, OptimizedMappingBoundaries boundaries)
     {
-        if (cellHandler.CollectionMapping == null || item == null)
+        if (cellHandler.CollectionMapping is null || item is null)
             return null;
 
         var collectionMapping = cellHandler.CollectionMapping;
-        var collection = collectionMapping.Getter(item);
-        if (collection == null) return null;
+        if(collectionMapping.Getter(item) is not { } collection)
+            return null;
 
         // Calculate the actual item index based on the absolute row
         // This handles rows beyond our pre-calculated grid
@@ -740,7 +728,7 @@ internal static partial class MappingWriter<T>
         }
         
         // If we have a pre-compiled value extractor for nested properties, use it
-        if (cellHandler.ValueExtractor != null)
+        if (cellHandler.ValueExtractor is not null)
         {
             // The ValueExtractor was pre-compiled to extract the specific property from the nested object
             return cellHandler.ValueExtractor(item, actualItemIndex);
@@ -748,9 +736,12 @@ internal static partial class MappingWriter<T>
 
         // Otherwise fall back to simple collection item extraction
         var collectionItems = collection.Cast<object>().ToArray();
-        if (collectionItems.Length == 0) return null;
+        if (collectionItems is []) 
+            return null;
 
         // Return the collection item if index is valid
-        return actualItemIndex >= 0 && actualItemIndex < collectionItems.Length ? collectionItems[actualItemIndex] : null;
+        return actualItemIndex >= 0 && actualItemIndex < collectionItems.Length 
+            ? collectionItems[actualItemIndex] 
+            : null;
     }
 }

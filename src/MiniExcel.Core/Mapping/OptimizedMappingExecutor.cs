@@ -1,5 +1,3 @@
-using System.Runtime.CompilerServices;
-
 namespace MiniExcelLib.Core.Mapping;
 
 /// <summary>
@@ -20,9 +18,9 @@ internal sealed class OptimizedMappingExecutor<T>
     // Minimum column number (1-based) for offset calculation
     private readonly int _minColumn;
     
-    public OptimizedMappingExecutor(CompiledMapping<T> mapping)
+    public OptimizedMappingExecutor(CompiledMapping<T>? mapping)
     {
-        if (mapping?.OptimizedBoundaries == null)
+        if (mapping?.OptimizedBoundaries is null)
             throw new ArgumentException("Mapping must be optimized");
             
         var boundaries = mapping.OptimizedBoundaries;
@@ -42,8 +40,8 @@ internal sealed class OptimizedMappingExecutor<T>
         // Initialize all columns with no-op handlers
         for (int i = 0; i < _columnCount; i++)
         {
-            _columnGetters[i] = static (obj) => null;
-            _columnSetters[i] = static (obj, val) => { };
+            _columnGetters[i] = static _ => null;
+            _columnSetters[i] = static (_, _) => { };
         }
         
         // Map properties to their column positions
@@ -54,13 +52,13 @@ internal sealed class OptimizedMappingExecutor<T>
             {
                 // Create optimized getter that directly accesses the property
                 var getter = prop.Getter;
-                _columnGetters[columnIndex] = (T obj) => getter(obj);
+                _columnGetters[columnIndex] = obj => getter(obj);
                 
                 // Create optimized setter if available
                 var setter = prop.Setter;
-                if (setter != null)
+                if (setter is not null)
                 {
-                    _columnSetters[columnIndex] = (T obj, object? value) => setter(obj, value);
+                    _columnSetters[columnIndex] = (obj, value) => setter(obj, value);
                 }
             }
         }
@@ -74,23 +72,16 @@ internal sealed class OptimizedMappingExecutor<T>
     
     private void PreCalculateCollectionAccessors(CompiledCollectionMapping collection, OptimizedMappingBoundaries boundaries)
     {
-        var startCol = collection.StartCellColumn;
-        var startRow = collection.StartCellRow;
-        
         // Only support vertical collections
         if (collection.Layout == CollectionLayout.Vertical)
         {
             // For vertical, we'd handle differently based on row
             // This is simplified - real implementation would consider rows
-            var colIndex = startCol - _minColumn;
+            var colIndex = collection.StartCellColumn - _minColumn;
             if (colIndex >= 0 && colIndex < _columnCount)
             {
                 var collectionGetter = collection.Getter;
-                _columnGetters[colIndex] = (T obj) =>
-                {
-                    var enumerable = collectionGetter(obj);
-                    return enumerable?.Cast<object>().FirstOrDefault();
-                };
+                _columnGetters[colIndex] = obj => collectionGetter(obj)?.Cast<object?>().FirstOrDefault();
             }
         }
     }
@@ -102,11 +93,9 @@ internal sealed class OptimizedMappingExecutor<T>
     public object? GetValue(T item, int column)
     {
         var index = column - _minColumn;
-        if (index >= 0 && index < _columnCount)
-        {
-            return _columnGetters[index](item);
-        }
-        return null;
+        return index >= 0 && index < _columnCount 
+            ? _columnGetters[index](item) 
+            : null;
     }
     
     /// <summary>
@@ -125,22 +114,13 @@ internal sealed class OptimizedMappingExecutor<T>
     /// <summary>
     /// Create optimized row dictionary for OpenXmlWriter
     /// </summary>
-    public Dictionary<string, object> CreateRow(T item)
+    public Dictionary<string, object?> CreateRow(T item)
     {
-        var row = new Dictionary<string, object>(_columnCount);
-        
-        for (int i = 0; i < _columnCount; i++)
-        {
-            var value = _columnGetters[i](item);
-            if (value != null)
-            {
-                var column = i + _minColumn;
-                var columnLetter = OpenXml.Utils.ReferenceHelper.GetCellLetter(
-                    OpenXml.Utils.ReferenceHelper.ConvertCoordinatesToCell(column, 1));
-                row[columnLetter] = value;
-            }
-        }
-        
-        return row;
+        return Enumerable.Range(0, _columnCount)
+            .Select(i => (i + _minColumn, _columnGetters[i](item)))
+            .OfType<(int Column, object? Value)>()
+            .ToDictionary(
+                kvp => ReferenceHelper.GetCellLetter(ReferenceHelper.ConvertCoordinatesToCell(kvp.Column, 1)),
+                kvp => kvp.Value);
     }
 }

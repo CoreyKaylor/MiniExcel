@@ -1,8 +1,5 @@
-using System.Collections;
 using System.Linq.Expressions;
-using System.Reflection;
 using MiniExcelLib.Core.Mapping.Configuration;
-using MiniExcelLib.Core.OpenXml.Utils;
 
 namespace MiniExcelLib.Core.Mapping;
 
@@ -25,7 +22,7 @@ internal static class MappingCompiler
     /// </summary>
     public static CompiledMapping<T> Compile<T>(MappingConfiguration<T> configuration, MappingRegistry? registry = null)
     {
-        if (configuration == null)
+        if (configuration is null)
             throw new ArgumentNullException(nameof(configuration));
 
         var properties = new List<CompiledPropertyMapping>();
@@ -35,7 +32,7 @@ internal static class MappingCompiler
         foreach (var prop in configuration.PropertyMappings)
         {
             if (string.IsNullOrEmpty(prop.CellAddress))
-                throw new InvalidOperationException($"Property mapping must specify a cell address using ToCell()");
+                throw new InvalidOperationException("Property mapping must specify a cell address using ToCell()");
 
             var parameter = Expression.Parameter(typeof(object), "obj");
             var cast = Expression.Convert(parameter, typeof(T));
@@ -55,7 +52,7 @@ internal static class MappingCompiler
             
             // Create assignment if it's a member expression
             Action<object, object?>? setter = null;
-            if (prop.Expression.Body is MemberExpression memberExpr && memberExpr.Member is PropertyInfo propInfo)
+            if (prop.Expression.Body is MemberExpression { Member: PropertyInfo propInfo })
             {
                 var assign = Expression.Assign(Expression.Property(castObj, propInfo), castValue);
                 var setterLambda = Expression.Lambda<Action<object, object?>>(assign, setterParam, valueParam);
@@ -83,7 +80,7 @@ internal static class MappingCompiler
         foreach (var coll in configuration.CollectionMappings)
         {
             if (string.IsNullOrEmpty(coll.StartCell))
-                throw new InvalidOperationException($"Collection mapping must specify a start cell using StartAt()");
+                throw new InvalidOperationException("Collection mapping must specify a start cell using StartAt()");
 
             var parameter = Expression.Parameter(typeof(object), "obj");
             var cast = Expression.Convert(parameter, typeof(T));
@@ -114,7 +111,7 @@ internal static class MappingCompiler
             
             // Create setter for collection
             Action<object, object?>? collectionSetter = null;
-            if (coll.Expression.Body is MemberExpression collMemberExpr && collMemberExpr.Member is System.Reflection.PropertyInfo collPropInfo)
+            if (coll.Expression.Body is MemberExpression { Member: PropertyInfo collPropInfo })
             {
                 var setterParam = Expression.Parameter(typeof(object), "obj");
                 var valueParam = Expression.Parameter(typeof(object), "value");
@@ -143,16 +140,15 @@ internal static class MappingCompiler
             };
             
             // Try to get the item mapping from the registry if available
-            if (itemType != null && registry != null)
+            if (itemType is not null && registry is not null)
             {
-                var itemMapping = registry.GetCompiledMapping(itemType);
-                if (itemMapping != null)
+                if (registry.GetCompiledMapping(itemType) is { } itemMapping)
                 {
                     compiledCollection.ItemMapping = itemMapping;
                 }
             }
             // Otherwise compile nested item mapping if exists
-            else if (coll.ItemConfiguration != null && coll.ItemType != null)
+            else if (coll.ItemConfiguration is not null && coll.ItemType is not null)
             {
                 var compileMethod = typeof(MappingCompiler)
                     .GetMethod(nameof(Compile))!
@@ -177,28 +173,20 @@ internal static class MappingCompiler
         return compiledMapping;
     }
     
-    private static string GetPropertyName(LambdaExpression expression)
+    private static string GetPropertyName(LambdaExpression expression) => expression.Body switch
     {
-        if (expression.Body is MemberExpression memberExpr)
-        {
-            return memberExpr.Member.Name;
-        }
-        
-        if (expression.Body is UnaryExpression unaryExpr && unaryExpr.Operand is MemberExpression unaryMemberExpr)
-        {
-            return unaryMemberExpr.Member.Name;
-        }
-        
-        throw new InvalidOperationException($"Cannot extract property name from expression: {expression}");
-    }
-    
+        MemberExpression memberExpr => memberExpr.Member.Name,
+        UnaryExpression { Operand: MemberExpression unaryMemberExpr } => unaryMemberExpr.Member.Name,
+        _ => throw new InvalidOperationException($"Cannot extract property name from expression: {expression}")
+    };
+
     /// <summary>
     /// Optimizes a compiled mapping for runtime performance by pre-calculating cell positions
     /// and building optimized data structures for fast lookup and processing.
     /// </summary>
     public static void OptimizeMapping<T>(CompiledMapping<T> mapping, MappingRegistry? registry = null)
     {
-        if (mapping == null)
+        if (mapping is null)
             throw new ArgumentNullException(nameof(mapping));
 
         // If already optimized, skip
@@ -222,7 +210,7 @@ internal static class MappingCompiler
         mapping.OptimizedColumnHandlers = columnHandlers;
         
         // Step 5: Pre-compile collection factories and finalizers
-        PreCompileCollectionHelpers<T>(mapping);
+        PreCompileCollectionHelpers(mapping);
     }
 
     private static OptimizedMappingBoundaries CalculateMappingBoundaries<T>(CompiledMapping<T> mapping)
@@ -260,19 +248,22 @@ internal static class MappingCompiler
         // that belong directly to the root item. Nested collections (like Departments in a Company)
         // should NOT trigger multi-item pattern detection.
         // For now, we'll be conservative and only enable multi-item pattern for specific scenarios
-        if (mapping.Collections.Any() && mapping.Properties.Any())
+        if (mapping is { Collections: not [], Properties: not [] })
         {
             // Check if any collection has nested mapping (complex types)
             bool hasNestedCollections = false;
             foreach (var coll in mapping.Collections)
             {
                 // Check if the collection's item type has a mapping (complex type)
-                if (coll.ItemType != null && coll.Registry != null)
+                if (coll is { ItemType: not null, Registry: not null })
                 {
                     // Try to get the nested mapping - if it exists, it's a complex type
                     var nestedMapping = coll.Registry.GetCompiledMapping(coll.ItemType);
-                    if (nestedMapping != null && coll.ItemType != typeof(string) && 
-                        !coll.ItemType.IsValueType && !coll.ItemType.IsPrimitive)
+                    var collCondition = coll.ItemType != typeof(string) &&
+                                        !coll.ItemType.IsValueType
+                                        && !coll.ItemType.IsPrimitive;
+                    
+                    if (nestedMapping is not null && collCondition)
                     {
                         hasNestedCollections = true;
                         break;
@@ -285,32 +276,30 @@ internal static class MappingCompiler
             // with complex child items, not multiple root items
             if (!hasNestedCollections)
             {
-                // Calculate pattern height for multiple items with collections
                 var firstPropRow = mapping.Properties.Min(p => p.CellRow);
-                
+
                 // Find the actual last row of mapped elements (not the conservative bounds)
-                var lastMappedRow = firstPropRow;
-                
-                // Check actual collection start positions
-                foreach (var coll in mapping.Collections)
-                {
-                    // For vertical collections, we need a reasonable estimate
-                    // Use startRow + a small number of items (not the full 100 conservative limit)
-                    var estimatedEndRow = coll.StartCellRow + MinItemsForPatternCalc;
-                    lastMappedRow = Math.Max(lastMappedRow, estimatedEndRow);
-                }
-                
+                // For vertical collections, we need a reasonable estimate
+                // Use startRow + a small number of items (not the full 100 conservative limit)
+                var lastMappedRow = Math.Max(firstPropRow,  mapping.Collections.Max(coll => coll.StartCellRow + MinItemsForPatternCalc));
+
                 // The pattern height is the total height needed for one complete item
                 // including its properties and collections
                 boundaries.PatternHeight = lastMappedRow - firstPropRow + 1;
-                
+
                 // If we have a reasonable pattern height, mark this as a multi-item pattern
                 // This allows the grid to repeat for multiple items
-                if (boundaries.PatternHeight > 0 && boundaries.PatternHeight < MaxPatternHeight)
+                if (boundaries.PatternHeight is > 0 and < MaxPatternHeight)
                 {
                     boundaries.IsMultiItemPattern = true;
                 }
             }
+            else
+            {
+                return boundaries;
+            }
+
+            // Calculate pattern height for multiple items with collections
         }
 
         return boundaries;
@@ -339,29 +328,29 @@ internal static class MappingCompiler
                 
                 // Check if this is a complex type with nested mapping
                 var maxCol = startCol;
-                if (collection.ItemType != null && collection.Registry != null)
+                if (collection.ItemType is not null && collection.Registry is not null)
                 {
                     var nestedMapping = collection.Registry.GetCompiledMapping(collection.ItemType);
-                    if (nestedMapping != null && collection.ItemType != typeof(string) && 
-                        !collection.ItemType.IsValueType && !collection.ItemType.IsPrimitive)
+                    var collectionCondition = collection.ItemType != typeof(string) &&
+                                              !collection.ItemType.IsValueType &&
+                                              !collection.ItemType.IsPrimitive;
+                    
+                    if (nestedMapping is not null && collectionCondition)
                     {
                         // Extract max column from nested mapping properties
                         var nestedMappingType = nestedMapping.GetType();
                         var propsProperty = nestedMappingType.GetProperty("Properties");
-                        if (propsProperty != null)
+
+                        if (propsProperty?.GetValue(nestedMapping) is IEnumerable properties)
                         {
-                            var properties = propsProperty.GetValue(nestedMapping) as System.Collections.IEnumerable;
-                            if (properties != null)
+                            foreach (var prop in properties)
                             {
-                                foreach (var prop in properties)
+                                var propType = prop.GetType();
+                                var columnProperty = propType.GetProperty("CellColumn");
+                                if (columnProperty is not null)
                                 {
-                                    var propType = prop.GetType();
-                                    var columnProperty = propType.GetProperty("CellColumn");
-                                    if (columnProperty != null)
-                                    {
-                                        var column = (int)columnProperty.GetValue(prop);
-                                        maxCol = Math.Max(maxCol, column);
-                                    }
+                                    var column = (int)columnProperty.GetValue(prop);
+                                    maxCol = Math.Max(maxCol, column);
                                 }
                             }
                         }
@@ -377,21 +366,16 @@ internal static class MappingCompiler
 
     private static List<CollectionExpansionInfo> CalculateCollectionExpansions<T>(CompiledMapping<T> mapping)
     {
-        var expansions = new List<CollectionExpansionInfo>();
-
-        foreach (var collection in mapping.Collections)
-        {
-            expansions.Add(new CollectionExpansionInfo
+        return mapping.Collections
+            .Select(collection => new CollectionExpansionInfo
             {
                 StartRow = collection.StartCellRow,
                 StartColumn = collection.StartCellColumn,
                 Layout = collection.Layout,
                 RowSpacing = collection.RowSpacing,
                 CollectionMapping = collection
-            });
-        }
-
-        return expansions;
+            })
+            .ToList();
     }
 
     private static OptimizedCellHandler[,] BuildOptimizedCellGrid<T>(CompiledMapping<T> mapping, OptimizedMappingBoundaries boundaries)
@@ -411,9 +395,8 @@ internal static class MappingCompiler
         }
 
         // Process simple properties
-        for (int i = 0; i < mapping.Properties.Count; i++)
+        foreach (var prop in mapping.Properties)
         {
-            var prop = mapping.Properties[i];
             var relativeRow = prop.CellRow - boundaries.MinRow;
             var relativeCol = prop.CellColumn - boundaries.MinColumn;
 
@@ -476,7 +459,7 @@ internal static class MappingCompiler
         var itemType = collection.ItemType ?? typeof(object);
         var nestedMapping = collection.Registry?.GetCompiledMapping(itemType);
         
-        if (nestedMapping != null && itemType != typeof(string) && !itemType.IsValueType && !itemType.IsPrimitive)
+        if (nestedMapping is not null && itemType != typeof(string) && itemType is { IsValueType: false, IsPrimitive: false })
         {
             // Complex type with mapping - expand each item across multiple columns
             MarkVerticalComplexCollectionCells(grid, collection, collectionIndex, boundaries, startRow, startCol, nestedMapping);
@@ -555,15 +538,15 @@ internal static class MappingCompiler
     private static Action<object, object?>? CreatePreCompiledSetter(CompiledPropertyMapping property)
     {
         // Pre-compile the setter with type conversion built in
-        var originalSetter = property.Setter;
-        if (originalSetter == null) return null;
+        if (property.Setter is not { } originalSetter)
+            return null;
         
         var targetType = property.PropertyType;
         
         // Build a setter that includes conversion
         return (obj, value) =>
         {
-            if (value == null)
+            if (value is null)
             {
                 originalSetter(obj, null);
                 return;
@@ -571,7 +554,6 @@ internal static class MappingCompiler
             
             // Pre-compiled conversion logic - this runs at compile time, not runtime!
             object? convertedValue = value;
-            
             if (value.GetType() != targetType)
             {
                 convertedValue = targetType switch
@@ -597,14 +579,12 @@ internal static class MappingCompiler
         var getter = collection.Getter;
         return (obj, itemIndex) =>
         {
-            var enumerable = getter(obj);
-            if (enumerable == null) return null;
+            if(getter(obj) is not { } enumerable)
+                return null;
             
             // Try to use IList for O(1) access if possible
             if (enumerable is IList list)
-            {
                 return offset < list.Count ? list[offset] : null;
-            }
             
             // Fallback to Skip/FirstOrDefault for other IEnumerable
             return enumerable.Cast<object>().Skip(offset).FirstOrDefault();
@@ -613,18 +593,18 @@ internal static class MappingCompiler
     
     private static void PreCompileCollectionHelpers<T>(CompiledMapping<T> mapping)
     {
-        if (!mapping.Collections.Any()) return;
+        if (mapping.Collections.Count == 0) 
+            return;
         
         // Store pre-compiled helpers for each collection
-        var helpers = new List<OptimizedCollectionHelper>();
-        
+        List<OptimizedCollectionHelper> helpers = [];
         foreach (var collection in mapping.Collections)
         {
             var helper = new OptimizedCollectionHelper();
             
             // Get the actual property info
             var propInfo = typeof(T).GetProperty(collection.PropertyName);
-            if (propInfo == null) continue;
+            if (propInfo is null) continue;
             
             var propertyType = propInfo.PropertyType;
             var itemType = collection.ItemType ?? typeof(object);
@@ -633,7 +613,7 @@ internal static class MappingCompiler
             helper.Factory = () =>
             {
                 var listType = typeof(List<>).MakeGenericType(itemType);
-                return (System.Collections.IList)Activator.CreateInstance(listType)!;
+                return (IList)Activator.CreateInstance(listType)!;
             };
             
             // Pre-compile finalizer (converts list to final type)
@@ -641,7 +621,7 @@ internal static class MappingCompiler
             {
                 helper.IsArray = true;
                 var elementType = propertyType.GetElementType()!;
-                helper.Finalizer = (list) =>
+                helper.Finalizer = list =>
                 {
                     var array = Array.CreateInstance(elementType, list.Count);
                     list.CopyTo(array, 0);
@@ -651,7 +631,7 @@ internal static class MappingCompiler
             else
             {
                 helper.IsArray = false;
-                helper.Finalizer = (list) => list;
+                helper.Finalizer = list => list;
             }
             
             // Pre-compile setter
@@ -670,10 +650,9 @@ internal static class MappingCompiler
         // Use reflection to get the properties from the nested mapping
         var nestedMappingType = nestedMapping.GetType();
         var propsProperty = nestedMappingType.GetProperty("Properties");
-        if (propsProperty == null) return;
-        
-        var properties = propsProperty.GetValue(nestedMapping) as System.Collections.IEnumerable;
-        if (properties == null) return;
+
+        if (propsProperty?.GetValue(nestedMapping) is not IEnumerable properties) 
+            return;
         
         var propertyList = new List<(string Name, int Column, Func<object, object?> Getter)>();
         foreach (var prop in properties)
@@ -683,13 +662,13 @@ internal static class MappingCompiler
             var columnProperty = propType.GetProperty("CellColumn");
             var getterProperty = propType.GetProperty("Getter");
             
-            if (nameProperty != null && columnProperty != null && getterProperty != null)
+            if (nameProperty is not null && columnProperty is not null && getterProperty is not null)
             {
                 var name = nameProperty.GetValue(prop) as string;
                 var column = (int)columnProperty.GetValue(prop);
                 var getter = getterProperty.GetValue(prop) as Func<object, object?>;
                 
-                if (name != null && getter != null)
+                if (name is not null && getter is not null)
                 {
                     propertyList.Add((name, column, getter));
                 }
@@ -737,24 +716,25 @@ internal static class MappingCompiler
         return (obj, itemIndex) =>
         {
             var enumerable = collectionGetter(obj);
-            if (enumerable == null) return null;
+            if (enumerable is null) 
+                return null;
             
             // Try to use IList for O(1) access if possible
             if (enumerable is IList list)
             {
-                if (offset < list.Count && list[offset] != null)
+                if (offset < list.Count && list[offset] is { } item)
                 {
                     // Extract the property from the nested object
-                    return propertyGetter(list[offset]);
+                    return propertyGetter(item);
                 }
             }
             else
             {
                 // Fall back to enumeration (slower but works)
                 var items = enumerable.Cast<object>().Skip(offset).Take(1).ToArray();
-                if (items.Length > 0 && items[0] != null)
+                if (items is [{ } item, ..])
                 {
-                    return propertyGetter(items[0]);
+                    return propertyGetter(item);
                 }
             }
             
@@ -765,10 +745,13 @@ internal static class MappingCompiler
     private static Func<object?, object?> CreatePreCompiledItemConverter(Type targetType)
     {
         // Pre-compile all the conversion logic
-        return (value) =>
+        return value =>
         {
-            if (value == null) return null;
-            if (value.GetType() == targetType) return value;
+            if (value is null) 
+                return null;
+            
+            if (value.GetType() == targetType)
+                return value;
             
             // These conversions are JIT-compiled and inlined
             try
@@ -790,7 +773,8 @@ internal static class MappingCompiler
             {
                 // Fallback to string parsing for robustness
                 var str = value.ToString();
-                if (string.IsNullOrEmpty(str)) return null;
+                if (string.IsNullOrEmpty(str)) 
+                    return null;
                 
                 return targetType switch
                 {
